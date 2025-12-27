@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A simple desktop application for extracting text from PDF files using OCR",
   "main": "public/electron.js",
+  "homepage": "./",
   "keywords": [
     "electron",
     "react",
@@ -19,6 +20,8 @@
     "tesseract.js": "^5.0.4"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "dotenv": "^17.2.3",
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1"
   },
@@ -29,8 +32,9 @@
     "eject": "react-scripts eject",
     "electron": "electron .",
     "electron-dev": "ELECTRON_IS_DEV=1 electron .",
-    "electron-pack": "electron-builder",
-    "preelectron-pack": "yarn build"
+    "electron-pack": "node scripts/build-with-version.js",
+    "download-poppler": "bash scripts/download-poppler.sh",
+    "bundle-poppler-deps": "bash scripts/bundle-poppler-deps.sh"
   },
   "build": {
     "appId": "com.wyzard.app",
@@ -41,13 +45,54 @@
     "files": [
       "build/**/*",
       "public/electron.js",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "resources/poppler/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/poppler",
+        "to": "poppler",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": null,
+    "afterSign": "scripts/notarize.js",
     "mac": {
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "resources/mac/entitlements.mac.plist",
+      "notarize": false,
+      "timestamp": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ]
     },
     "linux": {
       "target": "AppImage"

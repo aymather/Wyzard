@@ -24,3 +24,12 @@ yarn-error.log*
 /dist
 *.log
 
+# Code signing credentials
+.env
+.env.local
+
+# Poppler binaries (optional - uncomment if you want to ignore them in git)
+# /resources/poppler/darwin/pdftoppm
+# /resources/poppler/win32/pdftoppm.exe
+# /resources/poppler/linux/pdftoppm
+

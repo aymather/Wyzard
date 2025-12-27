@@ -12,20 +12,13 @@ A simple desktop application built with Electron.js and React that extracts text
 
 ## Installation
 
-1. Install system dependencies (required for PDF processing):
-   - **macOS**: Install poppler using Homebrew:
-     ```bash
-     brew install poppler
-     ```
-   - **Linux**: Install poppler-utils:
-     ```bash
-     sudo apt-get install poppler-utils  # Debian/Ubuntu
-     # or
-     sudo yum install poppler-utils      # RHEL/CentOS
-     ```
-   - **Windows**: Download poppler from [here](http://blog.alivate.com.au/poppler-windows/) and add it to your PATH
+### For End Users
 
-2. Install Node.js dependencies:
+**No additional installation required!** Poppler binaries are bundled with the application, so you don't need to install anything via Homebrew or package managers.
+
+### For Developers
+
+1. Install Node.js dependencies:
 ```bash
 yarn install
 ```
@@ -43,6 +36,25 @@ yarn electron-dev
 ```
 
 ## Building
+
+### Preparing Poppler Binaries
+
+Before building, you need to download/copy Poppler binaries for each platform you want to support:
+
+**Option 1: Use the download script (recommended)**
+```bash
+./scripts/download-poppler.sh
+```
+
+**Option 2: Manual installation**
+See `resources/poppler/README.md` for detailed instructions.
+
+The binaries should be placed in:
+- `resources/poppler/darwin/pdftoppm` (macOS)
+- `resources/poppler/win32/pdftoppm.exe` (Windows)
+- `resources/poppler/linux/pdftoppm` (Linux)
+
+### Building the Application
 
 To build the application for production:
 
@@ -66,7 +78,7 @@ The built application will be in the `dist` folder.
 - **Electron.js** - Desktop application framework
 - **React.js** - Frontend UI
 - **Tesseract.js** - OCR engine
-- **poppler-utils** (system) - PDF to image conversion via pdftoppm command
+- **Poppler** (bundled) - PDF to image conversion via pdftoppm command
 
 ## License
 

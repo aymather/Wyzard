@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { exec } = require("child_process");
+const { exec, execSync } = require("child_process");
 const { promisify } = require("util");
 const Tesseract = require("tesseract.js");
 const os = require("os");
@@ -14,6 +14,51 @@ const getOptimalConcurrency = () => {
   // Use 2x CPU cores for I/O bound operations, but cap at 16 to avoid overwhelming
   return Math.min(Math.max(cores * 2, 4), 16);
 };
+
+// Get path to bundled Poppler binary
+function getPopplerBinaryPath() {
+  const platform = process.platform;
+  const isDev = process.env.ELECTRON_IS_DEV === "1";
+  
+  let binaryName;
+  let resourcesPath;
+  let platformDir;
+  
+  if (isDev) {
+    // In development, binaries are in resources/poppler relative to project root
+    resourcesPath = path.join(__dirname, "..", "resources", "poppler");
+  } else {
+    // In production, use app's resources path
+    resourcesPath = path.join(process.resourcesPath, "poppler");
+  }
+  
+  // Map process.platform to our directory structure
+  // process.platform: 'darwin' (macOS), 'win32' (Windows), 'linux' (Linux)
+  if (platform === "darwin") {
+    platformDir = "darwin";
+    binaryName = "pdftoppm";
+  } else if (platform === "win32") {
+    platformDir = "win32";
+    binaryName = "pdftoppm.exe";
+  } else if (platform === "linux") {
+    platformDir = "linux";
+    binaryName = "pdftoppm";
+  } else {
+    // Unknown platform, fallback to system binary
+    return "pdftoppm";
+  }
+  
+  const binaryPath = path.join(resourcesPath, platformDir, binaryName);
+  
+  // Check if bundled binary exists
+  if (fs.existsSync(binaryPath)) {
+    return binaryPath;
+  }
+  
+  // Fallback to system-installed binary if bundled one doesn't exist
+  // This allows development without bundling binaries first
+  return "pdftoppm";
+}
 
 let mainWindow;
 
@@ -83,20 +128,107 @@ async function processPDF(pdfPath, onProgress = null) {
 
     const outputPrefix = path.join(tempDir, "page");
 
-    // Use system-installed pdftoppm to convert PDF to images
+    // Get path to bundled Poppler binary (or fallback to system-installed)
+    const pdftoppmPath = getPopplerBinaryPath();
+    
+    console.log(`[PDF Processing] Using pdftoppm at: ${pdftoppmPath}`);
+    
+    // On macOS, remove quarantine attribute if present (allows execution of bundled binaries)
+    if (process.platform === "darwin" && pdftoppmPath !== "pdftoppm" && fs.existsSync(pdftoppmPath)) {
+      try {
+        // Remove quarantine attribute to allow execution
+        execSync(`xattr -d com.apple.quarantine "${pdftoppmPath}" 2>/dev/null || true`);
+        // Ensure binary is executable
+        fs.chmodSync(pdftoppmPath, 0o755);
+        
+        // Check for required libraries
+        const binaryDir = path.dirname(pdftoppmPath);
+        const libsDir = path.join(binaryDir, "libs");
+        if (fs.existsSync(libsDir)) {
+          const libs = fs.readdirSync(libsDir).filter(f => f.endsWith('.dylib'));
+          console.log(`[PDF Processing] Found ${libs.length} library dependencies: ${libs.join(', ')}`);
+        } else {
+          console.warn(`[PDF Processing] Warning: libs directory not found at ${libsDir}. Binary may fail to execute.`);
+        }
+      } catch (e) {
+        // Ignore errors - binary might already be executable
+        console.error(`[PDF Processing] Warning: Could not prepare pdftoppm binary: ${e.message}`);
+      }
+    }
+    
     // Use DPI-based rendering (200 DPI) for good OCR quality while maintaining speed
     // Convert to grayscale (-gray) for faster OCR processing
     // This is better than scale-to as it ensures proper resolution for OCR
-    const command = `pdftoppm -png -gray -r 200 "${pdfPath}" "${outputPrefix}"`;
+    // Quote the binary path in case it contains spaces (especially on Windows)
+    
+    // On macOS, set library path for bundled binaries
+    let command;
+    let execOptions = {
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      timeout: 5 * 60 * 1000, // 5 minutes
+    };
+    
+    if (process.platform === "darwin" && pdftoppmPath !== "pdftoppm" && fs.existsSync(pdftoppmPath)) {
+      // Set DYLD_LIBRARY_PATH to include the libs directory for bundled binary
+      const binaryDir = path.dirname(pdftoppmPath);
+      const libsDir = path.join(binaryDir, "libs");
+      const env = { ...process.env };
+      
+      // Add libs directory to library path if it exists
+      if (fs.existsSync(libsDir)) {
+        env.DYLD_LIBRARY_PATH = libsDir + (env.DYLD_LIBRARY_PATH ? `:${env.DYLD_LIBRARY_PATH}` : '');
+      }
+      // Also add the binary directory itself (for @rpath resolution)
+      env.DYLD_LIBRARY_PATH = binaryDir + (env.DYLD_LIBRARY_PATH ? `:${env.DYLD_LIBRARY_PATH}` : '');
+      
+      execOptions.env = env;
+      command = `"${pdftoppmPath}" -png -gray -r 200 "${pdfPath}" "${outputPrefix}"`;
+    } else {
+      command = `"${pdftoppmPath}" -png -gray -r 200 "${pdfPath}" "${outputPrefix}"`;
+    }
 
+    console.log(`[PDF Processing] Executing: ${command}`);
+    console.log(`[PDF Processing] Library path: ${execOptions.env?.DYLD_LIBRARY_PATH || 'default'}`);
+    
     try {
-      await execAsync(command);
+      // Add timeout to prevent hanging (5 minutes max for large PDFs)
+      const timeout = 5 * 60 * 1000; // 5 minutes in milliseconds
+      const startTime = Date.now();
+      
+      const result = await Promise.race([
+        execAsync(command, execOptions),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Command timed out after 5 minutes')), timeout)
+        )
+      ]);
+      
+      const duration = Date.now() - startTime;
+      console.log(`[PDF Processing] pdftoppm completed in ${duration}ms`);
+      
+      if (result.stderr) {
+        console.warn(`[PDF Processing] pdftoppm stderr: ${result.stderr}`);
+      }
     } catch (execError) {
+      console.error(`[PDF Processing] Error executing pdftoppm:`, execError);
       // Check if pdftoppm is not found
       if (
         execError.message.includes("command not found") ||
+        execError.message.includes("ENOENT") ||
         execError.code === 127
       ) {
+        // Check if we tried to use bundled binary but it doesn't exist
+        const bundledPath = getPopplerBinaryPath();
+        if (bundledPath !== "pdftoppm") {
+          if (!fs.existsSync(bundledPath)) {
+            throw new Error(
+              `Bundled Poppler binary not found at: ${bundledPath}. Please ensure Poppler binaries are included in the app bundle.`
+            );
+          }
+          // Binary exists but can't execute - might be a permissions or signing issue
+          throw new Error(
+            `Bundled Poppler binary found at ${bundledPath} but cannot be executed. This may be a code signing or permissions issue.`
+          );
+        }
         throw new Error(
           "pdftoppm command not found. Please install poppler-utils: brew install poppler (macOS) or sudo apt-get install poppler-utils (Linux)"
         );
@@ -237,8 +369,16 @@ async function processPDF(pdfPath, onProgress = null) {
     if (
       error.message.includes("pdftoppm") ||
       error.message.includes("command not found") ||
-      error.message.includes("ENOENT")
+      error.message.includes("ENOENT") ||
+      error.message.includes("Bundled Poppler binary not found")
     ) {
+      // Check if bundled binary exists
+      const bundledPath = getPopplerBinaryPath();
+      if (bundledPath !== "pdftoppm" && !fs.existsSync(bundledPath)) {
+        throw new Error(
+          "Bundled Poppler binary not found. Please ensure Poppler binaries are included in the app bundle."
+        );
+      }
       throw new Error(
         "Poppler-utils is not installed. Please install it: brew install poppler (macOS) or sudo apt-get install poppler-utils (Linux)"
       );

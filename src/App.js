@@ -10,6 +10,8 @@ function App() {
   const [extractedText, setExtractedText] = useState("");
   const [error, setError] = useState("");
   const [batchResults, setBatchResults] = useState(null);
+  const [extractionHistory, setExtractionHistory] = useState([]);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState(null);
 
   // Set up batch and page progress listeners
   useEffect(() => {
@@ -53,7 +55,7 @@ function App() {
     };
   }, []);
 
-  const saveFile = useCallback(async (content) => {
+  const saveFile = useCallback(async (content, historyId = null) => {
     try {
       if (!window.electronAPI) {
         throw new Error("Electron API not available");
@@ -64,9 +66,33 @@ function App() {
 
       if (result.success) {
         setProgress(`File saved successfully to: ${result.filePath}`);
+        
+        // Update history item if it exists, otherwise add new one
+        if (historyId) {
+          setExtractionHistory(prev => 
+            prev.map(item => 
+              item.id === historyId
+                ? { ...item, saved: true, savedPath: result.filePath }
+                : item
+            )
+          );
+        } else if (extractedText) {
+          // Find the most recent history item for current extraction and update it
+          setExtractionHistory(prev => {
+            if (prev.length > 0 && prev[0].text === content && !prev[0].saved) {
+              return prev.map((item, idx) => 
+                idx === 0
+                  ? { ...item, saved: true, savedPath: result.filePath }
+                  : item
+              );
+            }
+            return prev;
+          });
+        }
+        
         setTimeout(() => {
           setProgress("");
-          setExtractedText("");
+          // Don't clear extractedText - keep it visible
         }, 3000);
       } else if (result.canceled) {
         setProgress("Save cancelled");
@@ -79,7 +105,7 @@ function App() {
       setError(err.message || "An error occurred while saving the file");
       setProgress("");
     }
-  }, []);
+  }, [extractedText]);
 
   const processPDF = useCallback(
     async (filePath) => {
@@ -107,9 +133,20 @@ function App() {
 
         if (result.success) {
           setExtractedText(result.text);
+          setSelectedHistoryItem(null); // Clear selected history when processing new file
           setProgress("Text extracted successfully!");
           // Page progress will be updated via the page-progress event
           // Don't manually set it here as it will be updated in real-time
+
+          // Add to history immediately (before saving)
+          const historyItem = {
+            id: Date.now(),
+            text: result.text,
+            fileName: fileName,
+            timestamp: new Date(),
+            saved: false
+          };
+          setExtractionHistory(prev => [historyItem, ...prev]);
 
           // Automatically prompt to save
           setTimeout(async () => {
@@ -285,6 +322,30 @@ function App() {
     }
   };
 
+  const handleHistoryItemClick = (item) => {
+    setExtractedText(item.text);
+    setSelectedHistoryItem(item.id);
+    setError("");
+    setProgress("");
+  };
+
+  const handleHistoryItemSave = async (item) => {
+    await saveFile(item.text, item.id);
+  };
+
+  const formatTimestamp = (timestamp) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   const getProgressPercentage = () => {
     if (documentProgress && documentProgress.total > 0) {
       return Math.round(
@@ -297,14 +358,24 @@ function App() {
   return (
     <div className="App">
       <div className="container">
-        <h1 className="title">Wyzard</h1>
-        <p className="subtitle">Extract text from PDF files using OCR</p>
+        <header className="header">
+          <div className="header-left">
+            <div className="logo">
+              <div className="logo-icon"></div>
+              Wyzard
+            </div>
+          </div>
+        </header>
 
-        <div
-          className={`drop-zone ${isProcessing ? "processing" : ""}`}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-        >
+        <div className="main-content">
+          <h1 className="title">Wyzard</h1>
+          <p className="subtitle">Extract text from PDF files using OCR</p>
+
+          <div
+            className={`drop-zone-card ${isProcessing ? "processing" : ""}`}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
           {isProcessing ? (
             <div className="processing-content">
               <div className="spinner"></div>
@@ -350,7 +421,7 @@ function App() {
               </svg>
               <p className="drop-text">Drag and drop PDF file(s) here</p>
               <p className="drop-subtext">or</p>
-              <button onClick={handleFileSelect} className="file-input-label">
+              <button onClick={handleFileSelect} className="file-input-button">
                 Browse Files
               </button>
               <p className="batch-hint">
@@ -358,7 +429,7 @@ function App() {
               </p>
             </div>
           )}
-        </div>
+          </div>
 
         {error && (
           <div className="error-message">
@@ -411,6 +482,50 @@ function App() {
             </div>
           </div>
         )}
+
+        {extractionHistory.length > 0 && !isProcessing && (
+          <div className="history-container">
+            <div className="history-header">
+              <h2>Extraction History</h2>
+              <span className="history-count">{extractionHistory.length} {extractionHistory.length === 1 ? 'item' : 'items'}</span>
+            </div>
+            <div className="history-list">
+              {extractionHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className={`history-item ${selectedHistoryItem === item.id ? 'selected' : ''}`}
+                  onClick={() => handleHistoryItemClick(item)}
+                >
+                  <div className="history-item-header">
+                    <div className="history-item-info">
+                      <span className="history-item-name">{item.fileName}</span>
+                      <span className="history-item-time">{formatTimestamp(item.timestamp)}</span>
+                    </div>
+                    <div className="history-item-actions">
+                      {item.saved && (
+                        <span className="history-saved-badge">Saved</span>
+                      )}
+                      <button
+                        className="history-save-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleHistoryItemSave(item);
+                        }}
+                      >
+                        {item.saved ? 'Re-save' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="history-item-preview">
+                    {item.text.substring(0, 150)}
+                    {item.text.length > 150 && '...'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        </div>
       </div>
     </div>
   );

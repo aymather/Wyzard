@@ -174,7 +174,7 @@ async function processPDF(pdfPath, onProgress = null) {
     let command;
     let execOptions = {
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-      timeout: 5 * 60 * 1000, // 5 minutes
+      timeout: 30 * 60 * 1000, // 30 minutes
     };
 
     if (
@@ -203,15 +203,15 @@ async function processPDF(pdfPath, onProgress = null) {
     }
 
     try {
-      // Add timeout to prevent hanging (5 minutes max for large PDFs)
-      const timeout = 5 * 60 * 1000; // 5 minutes in milliseconds
+      // Add timeout to prevent hanging (30 minutes max for large PDFs)
+      const timeout = 30 * 60 * 1000; // 30 minutes in milliseconds
       const startTime = Date.now();
 
       const result = await Promise.race([
         execAsync(command, execOptions),
         new Promise((_, reject) =>
           setTimeout(
-            () => reject(new Error("Command timed out after 5 minutes")),
+            () => reject(new Error("Command timed out after 30 minutes")),
             timeout
           )
         ),
@@ -525,17 +525,29 @@ ipcMain.handle("process-pdf", async (event, filePath) => {
     const fileName = path.basename(filePath);
     let totalPages = 0;
 
+    // Send transformation progress update before starting
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("page-progress", {
+        completed: 0,
+        total: null, // null indicates transformation phase
+        current: fileName,
+        isPages: false,
+        phase: "transforming",
+      });
+    }
+
     const extractedText = await processPDF(
       filePath,
       (completedPages, totalPagesCount) => {
         totalPages = totalPagesCount;
-        // Send page progress updates to renderer
+        // Send page progress updates to renderer (OCR phase)
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("page-progress", {
             completed: completedPages,
             total: totalPagesCount,
             current: fileName,
             isPages: true,
+            phase: "ocr",
           });
         }
       }

@@ -37,7 +37,8 @@ function App() {
             completed: progress.completed,
             total: progress.total,
             current: progress.current || "",
-            isPages: true,
+            isPages: progress.isPages !== undefined ? progress.isPages : true,
+            phase: progress.phase || "ocr",
           });
         });
       }
@@ -55,57 +56,64 @@ function App() {
     };
   }, []);
 
-  const saveFile = useCallback(async (content, historyId = null) => {
-    try {
-      if (!window.electronAPI) {
-        throw new Error("Electron API not available");
-      }
+  const saveFile = useCallback(
+    async (content, historyId = null) => {
+      try {
+        if (!window.electronAPI) {
+          throw new Error("Electron API not available");
+        }
 
-      setProgress("Choose where to save the file...");
-      const result = await window.electronAPI.saveFile(content);
+        setProgress("Choose where to save the file...");
+        const result = await window.electronAPI.saveFile(content);
 
-      if (result.success) {
-        setProgress(`File saved successfully to: ${result.filePath}`);
-        
-        // Update history item if it exists, otherwise add new one
-        if (historyId) {
-          setExtractionHistory(prev => 
-            prev.map(item => 
-              item.id === historyId
-                ? { ...item, saved: true, savedPath: result.filePath }
-                : item
-            )
-          );
-        } else if (extractedText) {
-          // Find the most recent history item for current extraction and update it
-          setExtractionHistory(prev => {
-            if (prev.length > 0 && prev[0].text === content && !prev[0].saved) {
-              return prev.map((item, idx) => 
-                idx === 0
+        if (result.success) {
+          setProgress(`File saved successfully to: ${result.filePath}`);
+
+          // Update history item if it exists, otherwise add new one
+          if (historyId) {
+            setExtractionHistory((prev) =>
+              prev.map((item) =>
+                item.id === historyId
                   ? { ...item, saved: true, savedPath: result.filePath }
                   : item
-              );
-            }
-            return prev;
-          });
-        }
-        
-        setTimeout(() => {
+              )
+            );
+          } else if (extractedText) {
+            // Find the most recent history item for current extraction and update it
+            setExtractionHistory((prev) => {
+              if (
+                prev.length > 0 &&
+                prev[0].text === content &&
+                !prev[0].saved
+              ) {
+                return prev.map((item, idx) =>
+                  idx === 0
+                    ? { ...item, saved: true, savedPath: result.filePath }
+                    : item
+                );
+              }
+              return prev;
+            });
+          }
+
+          setTimeout(() => {
+            setProgress("");
+            // Don't clear extractedText - keep it visible
+          }, 3000);
+        } else if (result.canceled) {
+          setProgress("Save cancelled");
+          setTimeout(() => setProgress(""), 2000);
+        } else {
+          setError(result.error || "Failed to save file");
           setProgress("");
-          // Don't clear extractedText - keep it visible
-        }, 3000);
-      } else if (result.canceled) {
-        setProgress("Save cancelled");
-        setTimeout(() => setProgress(""), 2000);
-      } else {
-        setError(result.error || "Failed to save file");
+        }
+      } catch (err) {
+        setError(err.message || "An error occurred while saving the file");
         setProgress("");
       }
-    } catch (err) {
-      setError(err.message || "An error occurred while saving the file");
-      setProgress("");
-    }
-  }, [extractedText]);
+    },
+    [extractedText]
+  );
 
   const processPDF = useCallback(
     async (filePath) => {
@@ -116,12 +124,14 @@ function App() {
       setExtractedText("");
       setBatchProgress(null);
       const fileName = filePath.split(/[/\\]/).pop() || filePath;
-      // Initial state - will be updated with actual page count via page-progress event
+      // Initial state - will be updated via page-progress event
+      // Start with transformation phase
       setDocumentProgress({
         completed: 0,
-        total: 1,
+        total: null,
         current: fileName,
-        isPages: true,
+        isPages: false,
+        phase: "transforming",
       });
 
       try {
@@ -144,9 +154,9 @@ function App() {
             text: result.text,
             fileName: fileName,
             timestamp: new Date(),
-            saved: false
+            saved: false,
           };
-          setExtractionHistory(prev => [historyItem, ...prev]);
+          setExtractionHistory((prev) => [historyItem, ...prev]);
 
           // Automatically prompt to save
           setTimeout(async () => {
@@ -339,15 +349,19 @@ function App() {
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMs / 3600000);
-    
+
     if (diffMins < 1) return "Just now";
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   const getProgressPercentage = () => {
-    if (documentProgress && documentProgress.total > 0) {
+    if (
+      documentProgress &&
+      documentProgress.total !== null &&
+      documentProgress.total > 0
+    ) {
       return Math.round(
         (documentProgress.completed / documentProgress.total) * 100
       );
@@ -376,155 +390,183 @@ function App() {
             onDragOver={handleDragOver}
             onDrop={handleDrop}
           >
-          {isProcessing ? (
-            <div className="processing-content">
-              <div className="spinner"></div>
-              <p>{progress}</p>
-              {documentProgress && (
-                <div className="document-progress">
-                  <div className="progress-bar-container">
-                    <div
-                      className="progress-bar"
-                      style={{ width: `${getProgressPercentage()}%` }}
-                    ></div>
-                  </div>
-                  <p className="progress-text">
-                    {documentProgress.completed} / {documentProgress.total}{" "}
-                    {documentProgress.isPages ? "page" : "document"}
-                    {documentProgress.total !== 1 ? "s" : ""} processed
-                    {getProgressPercentage() > 0 &&
-                      ` (${getProgressPercentage()}%)`}
-                  </p>
-                  {documentProgress.current && (
-                    <p className="current-file">
-                      Currently processing: {documentProgress.current}
+            {isProcessing ? (
+              <div className="processing-content">
+                <div className="spinner"></div>
+                <p>{progress}</p>
+                {documentProgress && (
+                  <div className="document-progress">
+                    <div className="progress-bar-container">
+                      <div
+                        className="progress-bar"
+                        style={{
+                          width:
+                            documentProgress.total === null
+                              ? "100%"
+                              : `${getProgressPercentage()}%`,
+                          opacity: documentProgress.total === null ? 0.5 : 1,
+                        }}
+                      ></div>
+                    </div>
+                    <p className="progress-text">
+                      {documentProgress.phase === "transforming" ||
+                      documentProgress.total === null ? (
+                        "Transforming PDF to Images..."
+                      ) : (
+                        <>
+                          {documentProgress.completed} /{" "}
+                          {documentProgress.total}{" "}
+                          {documentProgress.isPages ? "page" : "document"}
+                          {documentProgress.total !== 1 ? "s" : ""} processed
+                          {getProgressPercentage() > 0 &&
+                            ` (${getProgressPercentage()}%)`}
+                        </>
+                      )}
                     </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="drop-content">
-              <svg
-                width="64"
-                height="64"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" y1="3" x2="12" y2="15"></line>
-              </svg>
-              <p className="drop-text">Drag and drop PDF file(s) here</p>
-              <p className="drop-subtext">or</p>
-              <button onClick={handleFileSelect} className="file-input-button">
-                Browse Files
-              </button>
-              <p className="batch-hint">
-                Select multiple files for batch processing
-              </p>
-            </div>
-          )}
-          </div>
-
-        {error && (
-          <div className="error-message">
-            <p>⚠️ {error}</p>
-          </div>
-        )}
-
-        {progress && !error && (
-          <div className="progress-message">
-            <p>{progress}</p>
-          </div>
-        )}
-
-        {batchResults && !isProcessing && (
-          <div className="batch-results">
-            <h3>Batch Processing Results</h3>
-            <div className="results-summary">
-              <p>
-                ✅ Successful: {batchResults.filter((r) => r.success).length}
-              </p>
-              <p>❌ Failed: {batchResults.filter((r) => !r.success).length}</p>
-            </div>
-            {batchResults.filter((r) => !r.success).length > 0 && (
-              <div className="errors-list">
-                <h4>Errors:</h4>
-                <ul>
-                  {batchResults
-                    .filter((r) => !r.success)
-                    .map((result, idx) => (
-                      <li key={idx}>
-                        {result.fileName}: {result.error}
-                      </li>
-                    ))}
-                </ul>
+                    {documentProgress.current && (
+                      <p className="current-file">
+                        Currently processing: {documentProgress.current}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="drop-content">
+                <svg
+                  width="64"
+                  height="64"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <p className="drop-text">Drag and drop PDF file(s) here</p>
+                <p className="drop-subtext">or</p>
+                <button
+                  onClick={handleFileSelect}
+                  className="file-input-button"
+                >
+                  Browse Files
+                </button>
+                <p className="batch-hint">
+                  Select multiple files for batch processing
+                </p>
               </div>
             )}
           </div>
-        )}
 
-        {extractedText && !isProcessing && !isBatchMode && (
-          <div className="extracted-text-container">
-            <div className="extracted-text-header">
-              <h2>Extracted Text</h2>
-              <button onClick={handleSaveClick} className="save-button">
-                Save to File
-              </button>
+          {error && (
+            <div className="error-message">
+              <p>⚠️ {error}</p>
             </div>
-            <div className="extracted-text">
-              <pre>{extractedText}</pre>
-            </div>
-          </div>
-        )}
+          )}
 
-        {extractionHistory.length > 0 && !isProcessing && (
-          <div className="history-container">
-            <div className="history-header">
-              <h2>Extraction History</h2>
-              <span className="history-count">{extractionHistory.length} {extractionHistory.length === 1 ? 'item' : 'items'}</span>
+          {progress && !error && (
+            <div className="progress-message">
+              <p>{progress}</p>
             </div>
-            <div className="history-list">
-              {extractionHistory.map((item) => (
-                <div
-                  key={item.id}
-                  className={`history-item ${selectedHistoryItem === item.id ? 'selected' : ''}`}
-                  onClick={() => handleHistoryItemClick(item)}
-                >
-                  <div className="history-item-header">
-                    <div className="history-item-info">
-                      <span className="history-item-name">{item.fileName}</span>
-                      <span className="history-item-time">{formatTimestamp(item.timestamp)}</span>
-                    </div>
-                    <div className="history-item-actions">
-                      {item.saved && (
-                        <span className="history-saved-badge">Saved</span>
-                      )}
-                      <button
-                        className="history-save-button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleHistoryItemSave(item);
-                        }}
-                      >
-                        {item.saved ? 'Re-save' : 'Save'}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="history-item-preview">
-                    {item.text.substring(0, 150)}
-                    {item.text.length > 150 && '...'}
-                  </div>
+          )}
+
+          {batchResults && !isProcessing && (
+            <div className="batch-results">
+              <h3>Batch Processing Results</h3>
+              <div className="results-summary">
+                <p>
+                  ✅ Successful: {batchResults.filter((r) => r.success).length}
+                </p>
+                <p>
+                  ❌ Failed: {batchResults.filter((r) => !r.success).length}
+                </p>
+              </div>
+              {batchResults.filter((r) => !r.success).length > 0 && (
+                <div className="errors-list">
+                  <h4>Errors:</h4>
+                  <ul>
+                    {batchResults
+                      .filter((r) => !r.success)
+                      .map((result, idx) => (
+                        <li key={idx}>
+                          {result.fileName}: {result.error}
+                        </li>
+                      ))}
+                  </ul>
                 </div>
-              ))}
+              )}
             </div>
-          </div>
-        )}
+          )}
+
+          {extractedText && !isProcessing && !isBatchMode && (
+            <div className="extracted-text-container">
+              <div className="extracted-text-header">
+                <h2>Extracted Text</h2>
+                <button onClick={handleSaveClick} className="save-button">
+                  Save to File
+                </button>
+              </div>
+              <div className="extracted-text">
+                <pre>{extractedText}</pre>
+              </div>
+            </div>
+          )}
+
+          {extractionHistory.length > 0 && !isProcessing && (
+            <div className="history-container">
+              <div className="history-header">
+                <h2>Extraction History</h2>
+                <span className="history-count">
+                  {extractionHistory.length}{" "}
+                  {extractionHistory.length === 1 ? "item" : "items"}
+                </span>
+              </div>
+              <div className="history-list">
+                {extractionHistory.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`history-item ${
+                      selectedHistoryItem === item.id ? "selected" : ""
+                    }`}
+                    onClick={() => handleHistoryItemClick(item)}
+                  >
+                    <div className="history-item-header">
+                      <div className="history-item-info">
+                        <span className="history-item-name">
+                          {item.fileName}
+                        </span>
+                        <span className="history-item-time">
+                          {formatTimestamp(item.timestamp)}
+                        </span>
+                      </div>
+                      <div className="history-item-actions">
+                        {item.saved && (
+                          <span className="history-saved-badge">Saved</span>
+                        )}
+                        <button
+                          className="history-save-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleHistoryItemSave(item);
+                          }}
+                        >
+                          {item.saved ? "Re-save" : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="history-item-preview">
+                      {item.text.substring(0, 150)}
+                      {item.text.length > 150 && "..."}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

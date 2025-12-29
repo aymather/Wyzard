@@ -1,6 +1,6 @@
 {
   "name": "wyzard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A simple desktop application for extracting text from PDF files using OCR",
   "main": "public/electron.js",
   "homepage": "./",
